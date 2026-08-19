@@ -6,6 +6,11 @@ name: Build & Push GA add-on base images (armv7)
 # 3.22-2025.11.1) while the iHost fleet is hardware-locked to armv7. Alpine and
 # Debian THEMSELVES still ship armv7 with security updates, so we assemble a thin
 # base FROM a live distro and bump it in ONE place. See README + ga-ihost-docs.
+#
+# ORDER IS LOAD-BEARING: build → smoke → CVE GATE → push. The image is pushed
+# ONLY if the CVE gate passes, so we can never ship a base with a fixable
+# HIGH/CRITICAL in its distro layer. (An earlier version pushed first and scanned
+# after — that scans nothing you can un-ship. Do not reorder.)
 
 on:
   push:
@@ -13,7 +18,8 @@ on:
   workflow_dispatch:
   schedule:
     # Weekly rebuild so the unpinned apk/apt security patches within the pinned
-    # distro major are actually pulled (the whole point of owning the base).
+    # distro major are actually pulled AND re-scanned against the latest CVE DB
+    # (a base that was clean at build rots as new CVEs land — this catches it).
     - cron: "17 4 * * 1"
 
 permissions:
@@ -54,13 +60,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push ${{ matrix.image }}
+      # Build + LOAD locally (armv7 is single-platform, so --load works). Do NOT
+      # push yet — the CVE gate below decides whether this image is allowed out.
+      - name: Build ${{ matrix.image }} (load, no push yet)
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.dir }}
           file: ${{ matrix.dir }}/Dockerfile
           platforms: linux/arm/v7
-          push: true
+          load: true
+          push: false
           build-args: |
             BUILD_FROM=${{ matrix.base }}
             BUILD_ARCH=armv7
@@ -68,56 +77,57 @@ jobs:
             BUILD_REF=${{ github.sha }}
             BUILD_VERSION=${{ matrix.tag }}
             BUILD_REPOSITORY=${{ github.repository }}
-          tags: |
-            ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}
-            ghcr.io/greenautarky/${{ matrix.image }}:latest
+          tags: local/${{ matrix.image }}:scan
 
-      - name: Smoke-test the published image (armv7)
+      - name: Smoke-test (armv7)
         run: |
           set -euo pipefail
-          IMG="ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}"
-          docker run --rm --platform linux/arm/v7 --entrypoint sh "$IMG" -c '
+          docker run --rm --platform linux/arm/v7 --entrypoint sh local/${{ matrix.image }}:scan -c '
             set -e
             test -x /init
             test -x /usr/bin/bashio
             test -x /usr/bin/tempio
             command -v bash curl jq >/dev/null
-            echo "OK: ${0:-image} has /init, bashio, tempio, bash/curl/jq"
+            echo "OK: /init, bashio, tempio, bash/curl/jq present"
           '
 
-      # CVE scan of the BASE image. High-leverage: a CVE here propagates to EVERY
-      # add-on built on this base, so catching it once beats N per-add-on scans.
-      # Owning the base means we inherited this scan responsibility from upstream.
-      #
-      # TWO scopes, deliberately (learned from the real finding: tempio 2026.07.0
-      # bundles golang.org/x/crypto CVE-2025-22869 — a HIGH we cannot fix because
-      # tempio is an upstream prebuilt binary, not something we rebuild):
-      #
-      #  1. GATE on OS packages (apk/apt). These we CAN act on — a fixable
-      #     HIGH/CRITICAL here means the unpinned distro package has a patched
-      #     version, so a rebuild fixes it. Fail the build (fixes are actionable).
-      #     The weekly `schedule:` rebuild re-runs this against the latest CVE DB,
-      #     so an OS package that became vulnerable after build is caught within a
-      #     week — the piece a build-time-only gate cannot cover.
-      #  2. REPORT libraries (bundled binaries: tempio, s6-overlay). We can only
-      #     fix these by bumping the tool version when UPSTREAM rebuilds, not on
-      #     our schedule — so surface them for visibility, never wedge the build.
-      - name: CVE gate — OS packages (fixable HIGH/CRITICAL fail the build)
+      # CVE GATE on the DISTRO layer (apk/apt). A fixable HIGH/CRITICAL here means
+      # the unpinned distro package has a patched version, so a rebuild fixes it —
+      # so we FAIL, and the image is NOT pushed. `--ignore-unfixed` so a distro CVE
+      # with no fix yet cannot permanently wedge the base. Scans the LOCAL image
+      # (built above) — the gate runs before the image exists in the registry.
+      - name: CVE GATE — distro packages (fixable HIGH/CRITICAL block the push)
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}
-          format: table
+          image-ref: local/${{ matrix.image }}:scan
+          scanners: vuln
+          pkg-types: os
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          pkg-types: os
           exit-code: "1"
+          format: table
 
+      # REPORT the bundled prebuilt binaries (tempio, s6-overlay) separately — we
+      # can only fix those when UPSTREAM rebuilds them, not on our schedule, so
+      # surface for visibility but never block the push. (tempio 2026.07.0 bundles
+      # golang.org/x/crypto CVE-2025-22869 — a HIGH whose SSH path tempio's
+      # template renderer does not reach.)
       - name: CVE report — bundled libraries (visibility, non-gating)
         if: always()
         uses: aquasecurity/trivy-action@0.35.0
         with:
-          image-ref: ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}
-          format: table
-          severity: HIGH,CRITICAL
+          image-ref: local/${{ matrix.image }}:scan
+          scanners: vuln
           pkg-types: library
+          severity: HIGH,CRITICAL
           exit-code: "0"
+          format: table
+
+      # Reached only if the CVE gate passed. Tag + push the vetted image.
+      - name: Push (gate passed — publish the vetted image)
+        run: |
+          set -euo pipefail
+          for t in "${{ matrix.tag }}" latest; do
+            docker tag local/${{ matrix.image }}:scan "ghcr.io/greenautarky/${{ matrix.image }}:$t"
+            docker push "ghcr.io/greenautarky/${{ matrix.image }}:$t"
+          done
