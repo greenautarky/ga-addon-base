@@ -103,7 +103,7 @@ jobs:
       #     fix these by bumping the tool version when UPSTREAM rebuilds, not on
       #     our schedule — so surface them for visibility, never wedge the build.
       - name: CVE gate — OS packages (fixable HIGH/CRITICAL fail the build)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}
           format: table
@@ -114,7 +114,7 @@ jobs:
 
       - name: CVE report — bundled libraries (visibility, non-gating)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ghcr.io/greenautarky/${{ matrix.image }}:${{ matrix.tag }}
           format: table
