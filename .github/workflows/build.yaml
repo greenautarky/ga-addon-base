@@ -96,32 +96,32 @@ jobs:
       # so we FAIL, and the image is NOT pushed. `--ignore-unfixed` so a distro CVE
       # with no fix yet cannot permanently wedge the base. Scans the LOCAL image
       # (built above) — the gate runs before the image exists in the registry.
+      # Direct trivy invocation (NOT trivy-action): the action's `pkg-types`
+      # input did not scope the scan to OS packages in practice — it also scanned
+      # bundled Go binaries and failed on tempio's golang.org/x/crypto CVE, which
+      # we cannot fix. These exact flags are proven to scope correctly.
       - name: CVE GATE — distro packages (fixable HIGH/CRITICAL block the push)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: local/${{ matrix.image }}:scan
-          scanners: vuln
-          pkg-types: os
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          format: table
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --scanners vuln --pkg-types os \
+            --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 --no-progress \
+            local/${{ matrix.image }}:scan
 
-      # REPORT the bundled prebuilt binaries (tempio, s6-overlay) separately — we
-      # can only fix those when UPSTREAM rebuilds them, not on our schedule, so
-      # surface for visibility but never block the push. (tempio 2026.07.0 bundles
-      # golang.org/x/crypto CVE-2025-22869 — a HIGH whose SSH path tempio's
-      # template renderer does not reach.)
+      # REPORT the bundled prebuilt binaries (tempio, s6-overlay) — fixable only
+      # when UPSTREAM rebuilds them, not on our schedule, so surface but never
+      # block the push. (tempio 2026.07.0 bundles golang.org/x/crypto
+      # CVE-2025-22869 — a HIGH whose SSH path tempio's renderer does not reach.)
       - name: CVE report — bundled libraries (visibility, non-gating)
         if: always()
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          image-ref: local/${{ matrix.image }}:scan
-          scanners: vuln
-          pkg-types: library
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-          format: table
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            aquasec/trivy:latest image \
+            --scanners vuln --pkg-types library \
+            --severity HIGH,CRITICAL \
+            --exit-code 0 --no-progress \
+            local/${{ matrix.image }}:scan
 
       # Reached only if the CVE gate passed. Tag + push the vetted image.
       - name: Push (gate passed — publish the vetted image)
