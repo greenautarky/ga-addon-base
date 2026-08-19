@@ -1,0 +1,9 @@
+---
+build_from:
+  aarch64: arm64v8/debian:trixie-slim
+  amd64: amd64/debian:trixie-slim
+  armhf: arm32v5/debian:trixie-slim
+  armv7: arm32v7/debian:trixie-slim
+  i386: i386/debian:trixie-slim
+codenotary:
+  signer: codenotary@frenck.dev
