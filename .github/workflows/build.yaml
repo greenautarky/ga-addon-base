@@ -1,11 +1,25 @@
-name: Build & Push GA add-on base images (armv7)
+name: Build & Push GA add-on base images
 
-# Builds the two GreenAutarky-owned armv7 add-on base images and publishes them
-# to GHCR. We own these because every Home-Assistant-ecosystem armv7 base froze
-# in late 2025 (hassio-addons/base at 18.2.1, home-assistant/armv7-base at
-# 3.22-2025.11.1) while the iHost fleet is hardware-locked to armv7. Alpine and
+# Builds the GreenAutarky-owned add-on base images and publishes them to GHCR.
+#
+# The original reason was armv7 SCARCITY: every Home-Assistant-ecosystem armv7
+# base froze in late 2025 (hassio-addons/base at 18.2.1, home-assistant/armv7-base
+# at 3.22-2025.11.1) while the iHost fleet is hardware-locked to armv7. Alpine and
 # Debian THEMSELVES still ship armv7 with security updates, so we assemble a thin
-# base FROM a live distro and bump it in ONE place. See README + ga-ihost-docs.
+# base FROM a live distro and bump it in ONE place.
+#
+# The Debian images then grew to aarch64 and amd64 for a DIFFERENT reason, and
+# the distinction matters when deciding whether to own any future base: not
+# because upstream stopped building them, but because upstream's Debian base
+# PINS its package versions and never upgrades them, so no tag of it passes the
+# CVE gate. Measured 2026-08-20 on amd64 — 9.1.0 (the tag in use): 86 fixable
+# HIGH/CRITICAL; 9.4.0 (the newest): 36; ours: 0. Building FROM a live distro
+# with `apt upgrade` is what makes the difference, and it is not arch-specific.
+#
+# Alpine deliberately stays armv7-only: upstream's current hassio-addons/base
+# 21.0.2 measures 0, so owning aarch64/amd64 there would add maintenance for no
+# security gain. Scarcity and staleness are different problems; only fork for
+# the one you actually have. See README + ga-ihost-docs.
 #
 # ORDER IS LOAD-BEARING: build → smoke → CVE GATE → push. The image is pushed
 # ONLY if the CVE gate passes, so we can never ship a base with a fixable
@@ -33,21 +47,57 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Alpine: armv7 ONLY, on purpose. Upstream hassio-addons/base still
+          # builds aarch64 and amd64 and its current tag is clean — measured
+          # 2026-08-20, 21.0.2 = 0 fixable HIGH/CRITICAL. There is nothing to
+          # own there, and owning it anyway would raise the maintenance floor
+          # for no security gain.
           - flavor: alpine
             dir: alpine
             image: ga-addon-base-armv7
             base: arm32v7/alpine:3.24
             tag: "3.24"
+            platform: linux/arm/v7
+            build_arch: armv7
+          # Debian: ALL THREE arches, and that is a different call from Alpine's
+          # because the measurement is different. Upstream's Debian base pins its
+          # package versions and does not upgrade them, so NO tag passes the CVE
+          # gate — measured 2026-08-20 on amd64:
+          #     hassio-addons/debian-base:9.1.0  (in use)   86 fixable HIGH/CRITICAL
+          #     hassio-addons/debian-base:9.4.0  (newest)   36
+          #     ga-addon-debian-base-armv7:trixie            0
+          # Ours is clean because it runs `apt upgrade` at build time, which is
+          # the whole point of building FROM a live distro. That advantage was an
+          # armv7 side effect; extending it to the other two arches is what makes
+          # a Debian add-on publishable at all — a matrix job that cannot pass
+          # the gate blocks the store sync, and with it the armv7 image the
+          # fleet actually installs.
           - flavor: debian
             dir: debian
             image: ga-addon-debian-base-armv7
             base: arm32v7/debian:trixie-slim
             tag: "trixie"
+            platform: linux/arm/v7
+            build_arch: armv7
+          - flavor: debian
+            dir: debian
+            image: ga-addon-debian-base-aarch64
+            base: arm64v8/debian:trixie-slim
+            tag: "trixie"
+            platform: linux/arm64
+            build_arch: aarch64
+          - flavor: debian
+            dir: debian
+            image: ga-addon-debian-base-amd64
+            base: debian:trixie-slim
+            tag: "trixie"
+            platform: linux/amd64
+            build_arch: amd64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU (armv7 emulation)
+      - name: Set up QEMU (cross-arch emulation)
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
@@ -60,29 +110,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build + LOAD locally (armv7 is single-platform, so --load works). Do NOT
+      # Build + LOAD locally (one platform per job, so --load works). Do NOT
       # push yet — the CVE gate below decides whether this image is allowed out.
       - name: Build ${{ matrix.image }} (load, no push yet)
         uses: docker/build-push-action@v6
         with:
           context: ${{ matrix.dir }}
           file: ${{ matrix.dir }}/Dockerfile
-          platforms: linux/arm/v7
+          platforms: ${{ matrix.platform }}
           load: true
           push: false
           build-args: |
             BUILD_FROM=${{ matrix.base }}
-            BUILD_ARCH=armv7
+            BUILD_ARCH=${{ matrix.build_arch }}
             BUILD_DATE=${{ github.event.repository.updated_at }}
             BUILD_REF=${{ github.sha }}
             BUILD_VERSION=${{ matrix.tag }}
             BUILD_REPOSITORY=${{ github.repository }}
           tags: local/${{ matrix.image }}:scan
 
-      - name: Smoke-test (armv7)
+      - name: Smoke-test (${{ matrix.build_arch }})
         run: |
           set -euo pipefail
-          docker run --rm --platform linux/arm/v7 --entrypoint sh local/${{ matrix.image }}:scan -c '
+          docker run --rm --platform ${{ matrix.platform }} --entrypoint sh local/${{ matrix.image }}:scan -c '
             set -e
             test -x /init
             test -x /usr/bin/bashio
