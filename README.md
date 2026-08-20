@@ -5,8 +5,17 @@ Assistant add-ons:
 
 | Image | `FROM` | libc | for |
 |---|---|---|---|
-| `ghcr.io/greenautarky/ga-addon-base-armv7` | `arm32v7/alpine:3.24` | musl | default — `ga_manager`, `ga_zigbee2mqtt`, `ga_default_addon`, `ga_hmvapp_addon`, the dongle flasher |
+| `ghcr.io/greenautarky/ga-addon-base-armv7` | `arm32v7/alpine:3.24` | musl | default — `ga_manager`, `ga_default_addon`, `ga_hmvapp_addon`, `ga_logger` |
 | `ghcr.io/greenautarky/ga-addon-debian-base-armv7` | `arm32v7/debian:trixie-slim` | glibc | the Debian-native add-ons — `ga_mosquitto`, `ga_influxdbv1`, and anything needing a `manylinux_armv7l` (glibc) Python wheel that has no musl equivalent |
+
+Adoption state (2026-08-20): `ga_manager` migrated; `ga_default_addon`,
+`ga_hmvapp_addon`, `ga_logger`, `ga_influxdbv1`, `ga_mosquitto` in flight.
+`ga_zigbee2mqtt` is migrated **last and on its own**: Alpine 3.21 → 3.24 is also
+Node 22 → 24 on 32-bit ARM, which is the class of change Zigbee2MQTT upstream
+pinned armv7/armhf behind in the first place — so it gets its own green armv7 CI
+run rather than riding along with the others. The SONOFF dongle flasher is a
+byte-for-byte vendor image mirror with no Dockerfile of ours, so it has no
+`build_from` and cannot consume these bases at all.
 
 ## Why these exist
 
@@ -59,6 +68,41 @@ build_from:
 Pin the **distro-major tag** (`:3.24` / `:trixie`), not `:latest` — so a distro
 major bump is a deliberate, tested move, while security patches within the major
 arrive automatically on rebuild.
+
+### ⚠️ Migrating from the old Alpine base: check your C accelerators
+
+Alpine 3.24 ships **Python 3.14** (3.22 shipped 3.12), so every Python wheel is
+re-resolved on `cp314`. Some packages have no `cp314-musllinux_..._armv7l` wheel
+yet, so pip **source-builds them without their C extensions** and silently falls
+back to the pure-Python implementation. The build stays green, the imports still
+work, and nothing reports the regression.
+
+Measured on `ga_manager` (armv7, same source tree, only `build_from` changed):
+
+| | `hassio-addons/base:18.2.1` (Alpine 3.22, Py 3.12) | `ga-addon-base-armv7:3.24` (Alpine 3.24, Py 3.14) |
+|---|---|---|
+| `yaml.CLoader` available | `True` | **`False`** |
+| `markupsafe._speedups` available | `True` | **`False`** |
+| packages built from source | 0 | 2 (`PyYAML`, `MarkupSafe`) |
+
+Fix — install the distro's own builds, which do carry the C extensions:
+
+```dockerfile
+RUN apk add --no-cache py3-yaml py3-markupsafe
+```
+
+A later `pip install` then reports *"Requirement already satisfied"* and does not
+overwrite them. Verified on armv7, aarch64 and amd64, so it needs no per-arch
+branch.
+
+**Assert it, don't remember it.** Add a build-time check for the accelerators your
+add-on actually depends on — an exit code cannot see this class of regression:
+
+```dockerfile
+RUN python3 -c "import yaml, markupsafe; \
+    assert yaml.__with_libyaml__, 'PyYAML built without libyaml'; \
+    assert hasattr(markupsafe, '_speedups'), 'MarkupSafe built without _speedups'"
+```
 
 ## Maintenance
 
