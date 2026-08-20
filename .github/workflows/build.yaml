@@ -102,12 +102,7 @@ jobs:
       # we cannot fix. These exact flags are proven to scope correctly.
       - name: CVE GATE — distro packages (fixable HIGH/CRITICAL block the push)
         run: |
-          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-            aquasec/trivy:latest image \
-            --scanners vuln --pkg-types os \
-            --severity HIGH,CRITICAL --ignore-unfixed \
-            --exit-code 1 --no-progress \
-            local/${{ matrix.image }}:scan
+          scripts/cve-gate.sh local/${{ matrix.image }}:scan
 
       # REPORT the bundled prebuilt binaries (tempio, s6-overlay) — fixable only
       # when UPSTREAM rebuilds them, not on our schedule, so surface but never
