@@ -5,17 +5,18 @@ Assistant add-ons:
 
 | Image | `FROM` | libc | for |
 |---|---|---|---|
-| `ghcr.io/greenautarky/ga-addon-base-armv7` | `arm32v7/alpine:3.24` | musl | default — `ga_manager`, `ga_default_addon`, `ga_hmvapp_addon`, `ga_logger` |
-| `ghcr.io/greenautarky/ga-addon-debian-base-armv7` | `arm32v7/debian:trixie-slim` | glibc | the Debian-native add-ons — `ga_mosquitto`, `ga_influxdbv1`, and anything needing a `manylinux_armv7l` (glibc) Python wheel that has no musl equivalent |
+| `ghcr.io/greenautarky/ga-addon-base-armv7` | `arm32v7/alpine:3.24` | musl | default — `ga_manager`, `ga_default_addon`, `ga_ihosthardwarecontrol`, `ga_hmvapp_addon` |
+| `ghcr.io/greenautarky/ga-addon-debian-base-armv7` | `arm32v7/debian:trixie-slim` | glibc | the Debian-native add-ons — `ga_influxdbv1`, `ga_mosquitto`, and anything needing a `manylinux_armv7l` (glibc) Python wheel that has no musl equivalent |
 
-Adoption state (2026-08-20): `ga_manager` migrated; `ga_default_addon`,
-`ga_hmvapp_addon`, `ga_logger`, `ga_influxdbv1`, `ga_mosquitto` in flight.
-`ga_zigbee2mqtt` is migrated **last and on its own**: Alpine 3.21 → 3.24 is also
-Node 22 → 24 on 32-bit ARM, which is the class of change Zigbee2MQTT upstream
-pinned armv7/armhf behind in the first place — so it gets its own green armv7 CI
-run rather than riding along with the others. The SONOFF dongle flasher is a
-byte-for-byte vendor image mirror with no Dockerfile of ours, so it has no
-`build_from` and cannot consume these bases at all.
+**Adoption (2026-08-20).** `ga_manager` migrated; `ga_default_addon`,
+`ga_ihosthardwarecontrol` and `ga_influxdbv1` in flight. `ga_hmvapp_addon` and
+`ga_mosquitto` are deliberately **last**: they are the two that consume the base as a
+*compiler* rather than as a runtime (Nuitka multi-stage; CGO linking against the base's
+libc), so a toolchain or libc difference the others never notice becomes a link failure
+there. `ga_zigbee2mqtt` is **not** migrated here — it has its own active armv7 self-build
+stream, and the base bump belongs to that stream rather than cutting across it. The SONOFF
+dongle flasher is a byte-for-byte vendor image mirror with no Dockerfile of ours, so it has
+no `build_from` and cannot consume these bases at all.
 
 ## Why these exist
 
