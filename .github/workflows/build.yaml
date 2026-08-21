@@ -141,15 +141,40 @@ jobs:
             echo "OK: /init, bashio, tempio, bash/curl/jq present"
           '
 
-      # CVE GATE on the DISTRO layer (apk/apt). A fixable HIGH/CRITICAL here means
-      # the unpinned distro package has a patched version, so a rebuild fixes it —
-      # so we FAIL, and the image is NOT pushed. `--ignore-unfixed` so a distro CVE
-      # with no fix yet cannot permanently wedge the base. Scans the LOCAL image
-      # (built above) — the gate runs before the image exists in the registry.
-      # Direct trivy invocation (NOT trivy-action): the action's `pkg-types`
-      # input did not scope the scan to OS packages in practice — it also scanned
-      # bundled Go binaries and failed on tempio's golang.org/x/crypto CVE, which
-      # we cannot fix. These exact flags are proven to scope correctly.
+      # THE BOOT PATH ITSELF. Every earlier probe overrode the entrypoint, so
+      # an image whose /init could not start s6 sailed through smoke, gate and
+      # push — and on 2026-08-21 every add-on on this base crash-looped on
+      # devices with `unable to exec .../base-addon-banner: Permission denied`
+      # (exit 126, missing exec bits in the fork). This test runs the container
+      # the way the Supervisor does: entrypoint /init, s6 must come up and STAY
+      # up. Proven red against the broken :3.24 before the fix, green after.
+      - name: Boot-test /init (the exec-bit class — banner must start, no 126)
+        run: |
+          set -euo pipefail
+          # Runs the container the way the Supervisor does: entrypoint /init.
+          # Outside a real device the base-addon-log-level oneshot MUST fail
+          # (it queries the Supervisor API, which does not exist here) — that
+          # exit is expected and tolerated. What is asserted is the class that
+          # shipped broken on 2026-08-21: the s6 scripts were committed without
+          # exec bits, every add-on crash-looped at `unable to exec ...
+          # base-addon-banner: Permission denied` (126), and no probe anywhere
+          # ran /init because every one overrode the entrypoint. Proven red
+          # against the broken :3.24, green after the fix.
+          docker run -d --name boot-probe --platform ${{ matrix.platform }} \
+            local/${{ matrix.image }}:scan sleep 30 >/dev/null
+          sleep 12
+          LOGS=$(docker logs boot-probe 2>&1 || true)
+          docker rm -f boot-probe >/dev/null
+          echo "$LOGS" | tail -6
+          if echo "$LOGS" | grep -qE "Permission denied|command exited 126"; then
+            echo "::error::exec-bit defect: an s6 script could not be executed"
+            exit 1
+          fi
+          if ! echo "$LOGS" | grep -q "service base-addon-banner: starting"; then
+            echo "::error::the banner oneshot never even started — /init did not reach the s6 service tree"
+            exit 1
+          fi
+          echo "boot path OK: /init ran, banner started, no permission failures"
       - name: CVE GATE — distro packages (fixable HIGH/CRITICAL block the push)
         run: |
           scripts/cve-gate.sh local/${{ matrix.image }}:scan
