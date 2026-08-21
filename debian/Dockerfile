@@ -90,6 +90,15 @@ COPY rootfs /
 # Copy s6-overlay adjustments
 COPY s6-overlay /package/admin/s6-overlay-${S6_OVERLAY_VERSION}/
 
+# Belt and braces: the exec bits on these scripts ARE the boot path. On
+# 2026-08-21 every add-on built on this base crash-looped at /init with
+# `unable to exec .../base-addon-banner: Permission denied` (exit 126) —
+# the fork had recreated upstream's files without their exec bits, and no
+# smoke test anywhere ran /init: every probe overrode the entrypoint. The
+# git modes are fixed AND enforced here, so a future mode-loss (editor,
+# patch tool, checkout on a mode-stripping filesystem) cannot ship again.
+RUN chmod +x /package/admin/s6-overlay-${S6_OVERLAY_VERSION}/etc/s6-rc/scripts/* /usr/bin/service
+
 # Entrypoint & CMD
 ENTRYPOINT [ "/init" ]
 
