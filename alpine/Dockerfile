@@ -1,4 +1,34 @@
 ARG BUILD_FROM=alpine:3.24
+# tempio is built from source, not downloaded. Upstream's newest release
+# (2026.07.0) ships a binary built against an outdated Go toolchain and
+# golang.org/x/crypto, and every add-on on this base inherits it; add-on gates
+# that block on HIGH then cannot pass on any rebuild of ours. Same tag, same
+# source, current toolchain and x/crypto. Cross-compiled on the build host
+# (pure Go, CGO off), so no emulation is involved.
+ARG TEMPIO_VERSION="2026.07.0"
+ARG TEMPIO_GO_VERSION="1.27.1"
+ARG TEMPIO_X_CRYPTO_VERSION="v0.55.0"
+# hadolint ignore=DL3006
+FROM --platform=$BUILDPLATFORM golang:${TEMPIO_GO_VERSION} AS tempio
+ARG BUILD_ARCH=amd64
+ARG TEMPIO_VERSION
+ARG TEMPIO_X_CRYPTO_VERSION
+RUN git clone -q --depth 1 -b "${TEMPIO_VERSION}" https://github.com/home-assistant/tempio /src
+WORKDIR /src
+RUN case "${BUILD_ARCH}" in \
+      amd64) export GOARCH=amd64 ;; \
+      aarch64) export GOARCH=arm64 ;; \
+      armv7) export GOARCH=arm GOARM=7 ;; \
+      armhf) export GOARCH=arm GOARM=6 ;; \
+      i386) export GOARCH=386 ;; \
+      *) echo "unsupported BUILD_ARCH=${BUILD_ARCH}" && exit 1 ;; \
+    esac \
+    && go get "golang.org/x/crypto@${TEMPIO_X_CRYPTO_VERSION}" \
+    && go mod tidy \
+    && grep -q "golang.org/x/crypto ${TEMPIO_X_CRYPTO_VERSION}\b" go.mod \
+    && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags "-s -w" -o /tempio . \
+    && test -s /tempio
+
 # hadolint ignore=DL3006
 FROM ${BUILD_FROM}
 
@@ -28,7 +58,6 @@ SHELL ["/bin/ash", "-o", "pipefail", "-c"]
 ARG BUILD_ARCH=amd64
 ARG BASHIO_VERSION="v0.19.0"
 ARG S6_OVERLAY_VERSION="3.2.3.2"
-ARG TEMPIO_VERSION="2026.07.0"
 RUN \
     set -o pipefail \
     \
@@ -76,13 +105,11 @@ RUN \
     && mv /tmp/bashio/lib /usr/lib/bashio \
     && ln -s /usr/lib/bashio/bashio /usr/bin/bashio \
     \
-    && curl -L -s -o /usr/bin/tempio \
-        "https://github.com/home-assistant/tempio/releases/download/${TEMPIO_VERSION}/tempio_${BUILD_ARCH}" \
-    && chmod a+x /usr/bin/tempio \
-    \
     && apk del --no-cache --purge .build-dependencies \
     && rm -f -r \
         /tmp/*
+
+COPY --from=tempio /tempio /usr/bin/tempio
 
 # Copy root filesystem
 COPY rootfs /
