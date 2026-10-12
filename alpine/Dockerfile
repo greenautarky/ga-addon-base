@@ -6,7 +6,7 @@ ARG BUILD_FROM=alpine:3.24
 # source, current toolchain and x/crypto. Cross-compiled on the build host
 # (pure Go, CGO off), so no emulation is involved.
 ARG TEMPIO_VERSION="2026.07.0"
-ARG TEMPIO_GO_VERSION="1.27.1"
+ARG TEMPIO_GO_VERSION="1.27.2"
 ARG TEMPIO_X_CRYPTO_VERSION="v0.55.0"
 # hadolint ignore=DL3006
 FROM --platform=$BUILDPLATFORM golang:${TEMPIO_GO_VERSION} AS tempio
